@@ -1,82 +1,122 @@
-import json
-import os
-import subprocess
-import time
+#VERSION: 1.5
+#AUTHORS: mauricci
 
-print("\nGenerate the drive_list file")
-print("\n\tA. All Drives (automatic)")
-print("\tB. Selected Drives (manual)")
+from helpers import retrieve_url
+from helpers import download_file, retrieve_url
+from novaprinter import prettyPrinter
+import re
 
-choice = input("\nChoose either A or B > ")
+try:
+    #python3
+    from html.parser import HTMLParser
+except ImportError:
+    #python2
+    from HTMLParser import HTMLParser
+    
+class mejor(object):
+    url = 'https://www4.mejortorrent.rip/'
+    name = 'MejorTorrent'
+    supported_categories = {'all': '0'}
+    
+    class MyHTMLParser(HTMLParser):
 
-if choice in ['A', 'a', '1']:
-    input("\nNOTICE: Make sure Rclone is installed on your system PATH variable and Google Drive remote is configured properly\n\nPress ENTER to continue")
+        def __init__(self):
+            HTMLParser.__init__(self)
+            self.url = 'https://www4.mejortorrent.rip/'
+            self.TABLE_INDEX = 4
+            self.insideTd = False
+            self.insideDataTd = False
+            self.tableCount = -1
+            self.tdCount = -1
+            self.infoMap = {'name': 0}
+            self.fullResData = []
+            self.singleResData = self.getSingleData()
 
-    print("\nList of remotes")
-    print("---------------")
-    subprocess.run(['rclone', 'listremotes', '--long'])
+        def getSingleData(self):
+            return {'name':'-1','seeds':'-1','leech':'-1','size':'-1','link':'-1','desc_link':'-1','engine_url': self.url}
+    
+        def handle_starttag(self, tag, attrs):
+            if tag == 'table':
+                self.tableCount += 1
+            if tag == 'td':
+                self.insideTd = True
+                Dict = dict(attrs)
+                if self.tableCount == self.TABLE_INDEX:
+                    self.insideDataTd = True
+                    self.tdCount += 1
+            if self.insideDataTd and tag == 'a' and len(attrs) > 0:
+                 Dict = dict(attrs)
+                 if self.infoMap['name'] == self.tdCount and 'href' in Dict:
+                     self.singleResData['desc_link'] = self.url + Dict['href']
+                     self.singleResData['link'] = self.singleResData['desc_link']
 
-    remote = input("\nEnter a drive remote > ")
+        def handle_endtag(self, tag):
+            if tag == 'td':
+                self.insideTd = False
+                self.insideDataTd = False
+            if tag == 'tr':
+                self.tdCount = -1
+                if len(self.singleResData) > 0:
+                    #ignore trash stuff
+                    if self.singleResData['name'] != '-1':
+                        if (self.singleResData['desc_link'] != '-1' or self.singleResData['link'] != '-1'):
+                            prettyPrinter(self.singleResData)
+                            self.fullResData.append(self.singleResData)
+                    self.singleResData = self.getSingleData()
 
-    print("\nProcessing all drives")
+        def handle_data(self, data):
+            if self.insideDataTd:
+                #print(data)
+                for key,val in self.infoMap.items():
+                    if self.tdCount == val:
+                        currKey = key
+                        if currKey in self.singleResData and data.strip() != '':
+                            if self.singleResData[currKey] == '-1':
+                                self.singleResData[currKey] = data.strip()
+                            else:
+                                self.singleResData[currKey] += data.strip()
 
-    with open('drives.txt', 'w') as drives:
-        subprocess.run(['rclone', 'backend', 'drives', f'{remote}'], stdout=drives)
+        def feed(self,html):
+            HTMLParser.feed(self,html)
+            self.insideDataTd = False
+            self.tdCount = -1
+            self.tableCount = -1
 
-    msg = ''
-    with open('drives.txt', 'r+', encoding='utf8') as f1:
-        lines = json.loads(f1.read())
-        for count, item in enumerate(lines, 1):
-            id = item['id']
-            name = item['name'].strip().replace(' ', '_')
-            msg += f'{name} {id}\n'
-    time.sleep(2)
 
-    with open('drive_list', 'w', encoding='utf8') as f2:
-        f2.truncate(0)
-        f2.write(msg)
-    time.sleep(2)
+    # DO NOT CHANGE the name and parameters of this function
+    # This function will be the one called by nova2.py
+    def search(self, what, cat='all'):
+        what = what.replace('%20','+')
+        currCat = self.supported_categories[cat]
+        parser = self.MyHTMLParser()
 
-    os.remove('drives.txt')
-    print(f"\nGenerated the drive_list file with {len(lines)} drives")
-    exit()
+        #analyze firt pages of results (it should list all results)
+        for currPage in range(1,2):
+            url = self.url+'/secciones.php?sec=buscador&valor={0}'.format(what)
+            #print(url)
+            html = retrieve_url(url)
+            parser.feed(html)
+        #print(parser.fullResData)
+        data = parser.fullResData
+        parser.close()
 
-elif choice in ['B', 'b', '2']:
-    print("\nInstructions" \
-          "\n------------" \
-          "\nDrive Name > Name of the drive" \
-          "\nDrive ID   > ID of the drive" \
-          "\nIndex URL  > Index Link of the drive (Optional)")
 
-    num = int(input("\nTotal number of drives > "))
-    msg = ''
-    for count in range(1, num + 1):
-        print(f"\nDRIVE - {count}\n" \
-              f"----------")
-        name = input("Drive Name > ")
-        if not name:
-            print("\nERROR: Drive Name cannot be empty")
-            exit(1)
-        name = name.replace(" ", "_")
-        id = input("Drive ID   > ")
-        if not id:
-            print("\nERROR: Drive ID cannot be empty")
-            exit(1)
-        index = input("Index URL  > ")
-        if index:
-            if index[-1] == "/":
-                index = index[:-1]
-        else:
-            index = ''
-        msg += f"{name} {id} {index}\n"
+    def download_torrent(self, info):
+            """ Downloader """
+            html = retrieve_url(info)
+            m = re.search('(<a.*?>Descargar</a>)', html)
+            if m and len(m.groups()) > 0:
+                torrentAnchor = m.group(1)
+                torrentLink1 = re.search('href=[\'\"](.+?)[\'\"]',torrentAnchor)
+                if torrentLink1 and len(torrentLink1.groups()) > 0:
+                    torrentUrl = self.url + '/' + torrentLink1.group(1)
+                    html = retrieve_url(torrentUrl)
+                    torrentLink2 = re.search('<a.*?href=[\'\"](.+?\.torrent)[\'\"]>',html)
+                    if torrentLink2 and len(torrentLink2.groups()) > 0:
+                        #download_file is tested and downloads correctly the .torrent file
+                        #starting from the desc_url from the torrent choosen.
+                        print(download_file(torrentLink2.group(1)))
 
-    with open('drive_list', 'w') as f:
-        f.truncate(0)
-        f.write(msg)
-
-    print(f"\nGenerated the drive_list file with {num} drives")
-    exit()
-
-else:
-    print("\nERROR: Wrong input")
-    exit(1)
+if __name__ == "__main__":
+    m = mejor()
+    m.search('tomb%20raider')
